@@ -1,17 +1,20 @@
 """Flask API for bus route detection."""
-from flask import Flask, jsonify, request
+import os
+
+from flask import Flask, jsonify, request, send_from_directory
 
 import db
 import gps
 import routes_logic as rl
 import speech
 import voice
+import ai_gemini
 from i18n import norm_lang, tr
 from seed_data import seed
 
 
 def create_app(db_path=None):
-    app = Flask(__name__)
+    app = Flask(__name__, static_folder=None)
     path = db_path or db.DEFAULT_DB
     seed(path).close()
 
@@ -60,6 +63,22 @@ def create_app(db_path=None):
 
     def stop_json(r):
         return {"id": r["id"], "name": r["name"], "lat": r["lat"], "lng": r["lng"]}
+
+    # ---------- web app (served from the same link, so it is HTTPS on Render) ----------
+    @app.get("/")
+    def home():
+        return send_from_directory(os.path.join(os.path.dirname(__file__), "web"), "index.html")
+
+    # ---------- command understanding ----------
+    @app.post("/api/ai/command")
+    def ai_command():
+        """Body: {text, lang}. Returns {intent, source?, destination?, speech?}.
+        Intents: plan_route, sos, where_am_i, stops_remaining, repeat, boarded, help, unknown.
+        Uses Gemini when GEMINI_API_KEY is set, else (or on any failure) keyword matching."""
+        d = request.get_json(silent=True) or {}
+        if not d.get("text"):
+            raise ApiError("'text' is required")
+        return jsonify(ai_gemini.parse(conn(), d["text"], get_lang(d)))
 
     # ---------- health ----------
     @app.get("/api/health")
@@ -363,4 +382,5 @@ def create_app(db_path=None):
 
 
 if __name__ == "__main__":
-    create_app().run(host="0.0.0.0", port=5000, debug=True)
+    create_app().run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)),
+                     debug=os.environ.get("FLASK_DEBUG", "1") == "1")

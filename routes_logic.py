@@ -214,8 +214,30 @@ def resolve_stop(conn, q):
                      (f"%{q}%",)).fetchone()
     if r:
         return r
-    return conn.execute("""SELECT s.* FROM stops s JOIN stop_names n ON n.stop_id = s.id
-                           WHERE n.name LIKE ? ORDER BY length(n.name) LIMIT 1""", (f"%{q}%",)).fetchone()
+    r = conn.execute("""SELECT s.* FROM stops s JOIN stop_names n ON n.stop_id = s.id
+                        WHERE n.name LIKE ? ORDER BY length(n.name) LIMIT 1""", (f"%{q}%",)).fetchone()
+    return r or _fuzzy_stop(conn, q)
+
+
+def _squash(text):
+    return "".join(ch for ch in text.lower() if ch.isalnum())
+
+
+def _fuzzy_stop(conn, q):
+    """Last resort for speech-to-text spelling ('white field' -> Whitefield, 'majestik' -> Majestic)."""
+    import difflib
+    key = _squash(q)
+    if len(key) < 3:
+        return None
+    names = {}
+    for r in conn.execute("SELECT id, name FROM stops"):
+        names.setdefault(_squash(r["name"]), r["id"])
+    for r in conn.execute("SELECT stop_id, name FROM stop_names"):
+        names.setdefault(_squash(r["name"]), r["stop_id"])
+    if key in names:
+        return conn.execute("SELECT * FROM stops WHERE id = ?", (names[key],)).fetchone()
+    close = difflib.get_close_matches(key, list(names), n=1, cutoff=0.8)
+    return conn.execute("SELECT * FROM stops WHERE id = ?", (names[close[0]],)).fetchone() if close else None
 
 
 def search(conn, src_row, dst_row, max_transfers=2, limit=5):

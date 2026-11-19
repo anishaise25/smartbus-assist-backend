@@ -125,3 +125,11 @@ def tr(lang, key, **kw):
 
 def plural(lang, base, n):
     return tr(lang, f"{base}_one" if n == 1 else f"{base}_other", n=n)
+
+MSG["en"]["didnt_understand"] = "Sorry, I did not understand. You can say a place name, or say SOS in an emergency."
+MSG["kn"]["didnt_understand"] = "ಕ್ಷಮಿಸಿ, ನನಗೆ ಅರ್ಥವಾಗಲಿಲ್ಲ. ನೀವು ಸ್ಥಳದ ಹೆಸರು ಹೇಳಬಹುದು, ಅಥವಾ ತುರ್ತು ಸಂದರ್ಭದಲ್ಲಿ ಎಸ್‌ಒಎಸ್ ಎಂದು ಹೇಳಿ."
+MSG["hi"]["didnt_understand"] = "माफ़ कीजिए, मैं समझ नहीं पाया। आप किसी जगह का नाम बोल सकते हैं, या आपातकाल में एसओएस कहें।"
+
+MSG["en"]["help"] = "You can say a place name to find a bus, say where am I, say repeat, or say SOS in an emergency."
+MSG["kn"]["help"] = "ಬಸ್ ಹುಡುಕಲು ಸ್ಥಳದ ಹೆಸರು ಹೇಳಿ, ನಾನು ಎಲ್ಲಿದ್ದೇನೆ ಎಂದು ಕೇಳಿ, ಮತ್ತೆ ಹೇಳಿ ಎನ್ನಿ, ಅಥವಾ ತುರ್ತು ಸಂದರ್ಭದಲ್ಲಿ ಎಸ್‌ಒಎಸ್ ಎಂದು ಹೇಳಿ."
+MSG["hi"]["help"] = "बस खोजने के लिए जगह का नाम बोलिए, कहाँ हूँ पूछिए, दोबारा कहिए, या आपातकाल में एसओएस कहिए।"

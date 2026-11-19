@@ -146,6 +146,44 @@ def test_large_network_speed():
     print(f"   large network: {per:.2f}s per search")
     assert per < 3
 
+def test_ai_commands():
+    cmd = lambda text, lang="en": ok(c.post("/api/ai/command", json={"text": text, "lang": lang}))
+    r = cmd("please take me to Whitefield")
+    assert r["intent"] == "plan_route" and r["destination"]["name"] == "Whitefield" and not r["source"]
+    r = cmd("from Majestic to Whitefield")
+    assert r["source"]["name"] == "Majestic" and r["destination"]["name"] == "Whitefield"
+    assert cmd("ವೈಟ್‌ಫೀಲ್ಡ್ಗೆ ಹೋಗಬೇಕು", "kn")["destination"]["name"] == "Whitefield"
+    assert cmd("मुझे मेजेस्टिक जाना है", "hi")["destination"]["name"] == "Majestic"
+    assert cmd("help me")["intent"] == "sos" and cmd("मदद", "hi")["intent"] == "sos"
+    assert cmd("where am i")["intent"] == "where_am_i" and cmd("I boarded the bus")["intent"] == "boarded"
+    assert cmd("blah blah")["intent"] == "unknown"
+
+def test_home_page():
+    r = c.get("/")
+    assert r.status_code == 200 and b"SmartBus Assist" in r.data
+
+def test_gemini_path_and_fallback():
+    import ai_gemini
+    real = ai_gemini._call_gemini
+    try:
+        ai_gemini._call_gemini = lambda t: {"intent": "find_route", "source": "Majestic bus stand",
+                                            "destination": "white field", "language": "English"}
+        r = ok(c.post("/api/ai/command", json={"text": "take me from majestic to whitefield"}))
+        assert r["engine"] == "gemini" and r["destination"]["name"] == "Whitefield" and r["source"]["name"] == "Majestic"
+        ai_gemini._call_gemini = lambda t: {"intent": "find_route", "source": None, "destination": "Atlantis"}
+        r = ok(c.post("/api/ai/command", json={"text": "take me to Whitefield"}))      # Gemini names an unknown place
+        assert r["engine"] == "keywords" and r["destination"]["name"] == "Whitefield"
+        ai_gemini._call_gemini = lambda t: {"intent": "destination_alert", "language": "Hindi"}
+        assert ok(c.post("/api/ai/command", json={"text": "x"}))["intent"] == "boarded"
+        def boom(t): raise RuntimeError("down")
+        ai_gemini._call_gemini = boom                                                  # Gemini down -> keywords
+        assert ok(c.post("/api/ai/command", json={"text": "where am i"}))["engine"] == "keywords"
+        ai_gemini._call_gemini = lambda t: {"intent": "find_route", "destination": "Hebbal"}
+        assert ok(c.post("/api/ai/command", json={"text": "SOS help me"}))["intent"] == "sos"   # SOS never delayed
+    finally:
+        ai_gemini._call_gemini = real
+    assert ok(c.post("/api/ai/command", json={"text": "where am i"}))["engine"] == "keywords"  # no key set
+
 if __name__ == "__main__":
     for n, f in list(globals().items()):
         if n.startswith("test_"):
