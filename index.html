@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SmartBus Assist</title>
+<style>
+  :root { --bg:#000; --fg:#fff; --accent:#ffd400; }
+  body { margin:0 auto; max-width:720px; padding:16px; background:var(--bg); color:var(--fg);
+         font:20px/1.4 system-ui, sans-serif; }
+  h1 { font-size:28px; margin:8px 0; }
+  h2 { font-size:20px; margin:20px 0 4px; color:var(--accent); }
+  button, select, input { font:inherit; padding:16px; border-radius:12px; border:3px solid var(--accent);
+         background:#111; color:var(--fg); width:100%; margin:6px 0; box-sizing:border-box; }
+  button.big { background:var(--accent); color:#000; font-weight:700; font-size:30px; padding:40px 16px; }
+  button.sos { background:#c00; border-color:#fff; font-weight:700; font-size:26px; padding:28px 16px; }
+  :focus { outline:4px solid #0ff; outline-offset:2px; }
+  #log { border:2px solid #666; border-radius:12px; padding:8px 14px; min-height:120px; margin-top:12px; }
+  #log p { margin:8px 0; }
+  .row { display:flex; gap:8px; } .row > * { flex:1; }
+  small { color:#bbb; }
+</style>
+</head>
+<body>
+<h1>SmartBus Assist</h1>
+<p><small>Voice assistant for bus travel. Everything is spoken aloud.</small></p>
+
+<label for="lang">Language</label>
+<select id="lang">
+  <option value="en">English</option>
+  <option value="kn">ಕನ್ನಡ (Kannada)</option>
+  <option value="hi">हिन्दी (Hindi)</option>
+</select>
+
+<button id="speak" class="big" aria-label="Speak a command. For example, take me to Whitefield">Speak</button>
+
+<h2>Or type a command</h2>
+<div class="row">
+  <input id="cmd" placeholder="Take me to Whitefield" aria-label="Type a command">
+  <button id="send" style="max-width:120px">Send</button>
+</div>
+
+<h2>Bus board</h2>
+<label for="scan">Take a photo of the bus board</label>
+<input id="scan" type="file" accept="image/*" capture="environment">
+<div class="row">
+  <input id="busText" placeholder="Or type the bus number, e.g. 335E" aria-label="Bus number">
+  <button id="busBtn" style="max-width:120px">Check</button>
+</div>
+<button id="boarded">I have boarded this bus</button>
+
+<button id="sos" class="sos">SOS - Emergency</button>
+
+<h2>Setup</h2>
+<input id="from" placeholder="My current stop (only if GPS is off)" aria-label="My current stop">
+<div class="row">
+  <input id="cname" placeholder="Emergency contact name" aria-label="Emergency contact name">
+  <input id="cphone" placeholder="Phone" aria-label="Emergency contact phone">
+</div>
+<button id="saveContact">Save emergency contact</button>
+<div class="row">
+  <input id="testPos" placeholder="Test GPS: 12.9784,77.6408" aria-label="Test GPS position">
+  <button id="testBtn" style="max-width:120px">Send</button>
+</div>
+
+<h2>What I said</h2>
+<div id="log" aria-live="polite" role="log"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<script>
+// ---- shared plumbing ------------------------------------------------------
+// Same origin by default. To use a different backend:  ?api=https://your-backend.onrender.com
+const API = new URLSearchParams(location.search).get("api") || "";
+const LOC = { en: "en-IN", kn: "kn-IN", hi: "hi-IN" };
+const $ = id => document.getElementById(id);
+const lang = () => $("lang").value;
+let dest = null, bus = null, tripId = null, lastLevel = null, lastSpeech = "", watchId = null, lastSent = 0;
+
+function log(t) { const p = document.createElement("p"); p.textContent = t; $("log").prepend(p); }
+
+// text-to-speech (Member 1 can replace this with Google/Gemini TTS)
+function speak(t) {
+  lastSpeech = t; log(t);
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(t);
+  u.lang = LOC[lang()];
+  speechSynthesis.speak(u);
+}
+const buzz = p => { if (p && p.length && navigator.vibrate) navigator.vibrate(p); };
+
+async function api(path, body) {
+  const r = await fetch(API + path, body ? { method: "POST", headers: { "Content-Type": "application/json" },
+                                              body: JSON.stringify(body) } : undefined);
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.error || r.status);
+  return d;
+}
+const here = () => new Promise((ok, no) =>
+  navigator.geolocation.getCurrentPosition(p => ok(p.coords), no, { enableHighAccuracy: true, timeout: 8000 }));
+const guard = fn => async (...a) => { try { await fn(...a); } catch (e) { speak("Sorry, something went wrong. " + e.message); } };
+
+// ---- voice input (Member 1) ----------------------------------------------
+function listen() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) return speak("Voice input is not supported in this browser. Please type your command.");
+  const r = new SR();
+  r.lang = LOC[lang()];
+  r.onresult = e => { const t = e.results[0][0].transcript; log("You said: " + t); handle(t); };
+  r.onerror = () => speak("I could not hear you. Please try again.");
+  r.start();
+}
+
+// ---- understand a command, then act ---------------------------------------
+const handle = guard(async text => {
+  const c = await api("/api/ai/command", { text, lang: lang() });
+  if (c.intent === "sos") return sos();
+  if (c.intent === "repeat") return speak(lastSpeech || "Nothing to repeat yet.");
+  if (c.intent === "boarded") return boarded();
+  if (c.intent === "where_am_i") {
+    const p = await here();
+    const d = await api("/api/gps/detect", { lat: p.latitude, lng: p.longitude });
+    const s = d.at_stop || d.nearby_stops[0];
+    return speak(s ? "You are at " + s.name : "No bus stop nearby.");
+  }
+  if (c.intent === "plan_route") {
+    dest = c.destination.name;
+    let from = c.source ? c.source.name : $("from").value.trim();
+    if (!from) {
+      const p = await here();
+      const n = await api(`/api/gps/nearest?lat=${p.latitude}&lng=${p.longitude}&radius=2000&limit=1`);
+      if (!n.length) return speak("There is no bus stop near you.");
+      from = n[0].name;
+    }
+    const r = await api(`/api/search?from=${encodeURIComponent(from)}&to=${encodeURIComponent(dest)}&lang=${lang()}`);
+    return speak(r.speech);
+  }
+  speak(c.speech);
+});
+
+// ---- bus recognition (Member 3: camera + OCR) -------------------------------
+const identify = guard(async text => {
+  const body = { detected_text: text, destination: dest, lang: lang() };
+  try { const p = await here(); body.lat = p.latitude; body.lng = p.longitude; } catch (_) {}
+  const d = await api("/api/assist/identify-bus", body);
+  buzz(d.vibration);
+  if (d.identified) bus = d.bus_number;
+  speak(d.speech);
+});
+$("scan").onchange = guard(async e => {
+  const f = e.target.files[0]; if (!f) return;
+  speak("Reading the bus board. Please wait.");
+  const { data } = await Tesseract.recognize(f, "eng");
+  const m = (data.text || "").toUpperCase().match(/[A-Z]{0,3}[- ]?\d{1,3}[A-Z]?/g);
+  const guess = m ? m.sort((a, b) => b.length - a.length)[0] : "";
+  log("Camera read: " + (guess || "nothing"));
+  identify(guess);
+});
+
+// ---- live trip alerts -----------------------------------------------------
+const boarded = guard(async () => {
+  if (!bus || !dest) return speak("First say your destination and check the bus.");
+  const body = { bus_number: bus, destination: dest };
+  const manual = $("from").value.trim();
+  if (manual) body.boarding_stop = manual;
+  else { const p = await here(); body.lat = p.latitude; body.lng = p.longitude; }
+  const t = await api("/api/trips", body);
+  tripId = t.trip_id; lastLevel = null;
+  speak("Trip started. I will tell you when your stop is near.");
+  if (navigator.geolocation)
+    watchId = navigator.geolocation.watchPosition(p => position(p.coords.latitude, p.coords.longitude),
+                                                  () => log("GPS problem"), { enableHighAccuracy: true });
+});
+const position = guard(async (lat, lng) => {
+  if (!tripId || Date.now() - lastSent < 4000) return;
+  lastSent = Date.now();
+  const d = await api(`/api/trips/${tripId}/location`, { lat, lng, lang: lang() });
+  if (d.alert_level !== lastLevel) { lastLevel = d.alert_level; buzz(d.vibration); speak(d.speech); }
+  if (d.trip_status === "completed") { if (watchId) navigator.geolocation.clearWatch(watchId); tripId = null; }
+});
+
+// ---- SOS --------------------------------------------------------------------
+const sos = guard(async () => {
+  let p;
+  try { p = await here(); } catch (_) { return speak("I could not get your location. Please allow location access."); }
+  const d = await api("/api/sos", { lat: p.latitude, lng: p.longitude, lang: lang(), trip_id: tripId });
+  buzz(d.vibration); speak(d.speech); log("Message for contacts: " + d.message_to_send);
+});
+
+// ---- wiring -----------------------------------------------------------------
+$("speak").onclick = listen;
+$("send").onclick = () => { const t = $("cmd").value.trim(); if (t) { log("You typed: " + t); handle(t); } };
+$("busBtn").onclick = () => identify($("busText").value);
+$("boarded").onclick = boarded;
+$("sos").onclick = sos;
+$("saveContact").onclick = guard(async () => {
+  await api("/api/contacts", { name: $("cname").value, phone: $("cphone").value });
+  speak("Emergency contact saved.");
+});
+$("testBtn").onclick = () => { const [a, b] = $("testPos").value.split(",").map(Number); lastSent = 0; position(a, b); };
+</script>
+</body>
+</html>
